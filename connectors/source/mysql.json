@@ -1,0 +1,22 @@
+{
+  "name": "mysql-source-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.mysql.MySqlConnector",
+    "tasks.max": "1",
+    "database.hostname": "mysql",
+    "database.port": "3306",
+    "database.user": "root",
+    "database.password": "***MYSQL_ROOT_PASSWORD***",
+    "database.dbname": "bitcoin",
+    "database.whitelist": "binance",
+    "database.server.id": "223344",
+    "database.server.name": "dbserver1",
+    "topic.prefix": "dbserver1",
+    "schema.history.internal.kafka.bootstrap.servers": "broker1:9092,broker2:9092",
+    "schema.history.internal.kafka.topic": "schema-changes.bitcoin.binance",
+    "key.converter": "io.confluent.connect.avro.AvroConverter",
+    "key.converter.schema.registry.url": "http://schema-registry:8081",
+    "value.converter": "io.confluent.connect.avro.AvroConverter",
+    "value.converter.schema.registry.url": "http://schema-registry:8081"
+  }
+}

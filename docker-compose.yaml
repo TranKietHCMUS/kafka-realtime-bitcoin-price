@@ -1,0 +1,293 @@
+version: "3"
+
+services:
+  binance-crawler:
+    build:
+      context: ./crawler/binance
+      dockerfile: Dockerfile
+    container_name: binance-crawler
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      MYSQL_HOST: mysql
+      MYSQL_PORT: 3306
+      MYSQL_USER: root
+      MYSQL_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: bitcoin
+      TABLE_NAME: binance
+      WEB_URL: https://www.binance.com/en/trade/BTC_USDT?_from=markets&theme=dark&type=spot
+      TIME_SLEEP: ${TIME_SLEEP}
+    ports:
+      - "6969:6969"
+    volumes:
+      - ./crawler/binance:/crawler/binance
+    networks:
+      - kafka-network
+    
+  coin-market-crawler:
+    build:
+      context: ./crawler/coin-market
+      dockerfile: Dockerfile
+    container_name: coin-market-crawler
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      SERVER_NAME: postgres
+      POSTGRES_DB: bitcoin
+      POSTGRES_TABLE: bitcoin.coin_market
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      TIME_SLEEP: ${TIME_SLEEP}
+      WEB_URL: https://coinmarketcap.com/en/currencies/bitcoin/
+    ports:
+      - "6970:6970"
+    volumes:
+      - ./crawler/coin-market:/crawler/coin-market
+    networks:
+      - kafka-network
+
+  postgres:
+    image: debezium/postgres:13
+    container_name: postgres
+    restart: always
+    networks:
+      - kafka-network
+    environment:
+      POSTGRES_DB: bitcoin
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./init-sql/postgres:/docker-entrypoint-initdb.d
+    command: ["postgres", "-c", "wal_level=logical"]
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+    
+  mysql:
+    image: mysql:8.0.32
+    container_name: mysql
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: bitcoin
+    ports:
+      - "3307:3306"
+    volumes:
+      - ./init-sql/mysql:/docker-entrypoint-initdb.d
+    networks:
+      - kafka-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+  
+  sqlserver:
+    image: mcr.microsoft.com/mssql/server:2019-latest
+    container_name: sqlserver
+    environment:
+      ACCEPT_EULA: Y
+      SA_PASSWORD: ${SA_PASSWORD}
+      MSSQL_PID: Developer
+    ports:
+      - "1433:1433"
+    networks:
+      - kafka-network
+
+  zookeeper:
+    image: quay.io/debezium/zookeeper:2.7
+    container_name: zookeeper
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      sqlserver:
+        condition: service_started
+    ports:
+      - 2181:2181
+      - 2888:2888
+      - 3888:3888
+    networks:
+      - kafka-network
+
+  broker1:
+    image: quay.io/debezium/kafka:2.7
+    container_name: broker1
+    ports:
+      - 9092:9092
+    links:
+      - zookeeper
+    environment:
+      - BROKER_ID=1
+      - ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_NUM_PARTITIONS=4
+      - KAFKA_DEFAULT_REPLICATION_FACTOR=2
+    networks:
+      - kafka-network
+  
+  broker2:
+    image: quay.io/debezium/kafka:2.7
+    container_name: broker2
+    ports:
+      - 9093:9092
+    links:
+      - zookeeper
+    environment:
+      - BROKER_ID=2
+      - ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_NUM_PARTITIONS=4
+      - KAFKA_DEFAULT_REPLICATION_FACTOR=2
+    networks:
+      - kafka-network
+
+  schema-registry:
+    image: confluentinc/cp-schema-registry:6.0.0
+    container_name: schema-registry
+    depends_on:
+      - zookeeper
+      - broker1
+      - broker2
+    ports:
+      - '8081:8081'
+      - '31002:31002'
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_CONNECTION_URL: zookeeper:2181
+      SCHEMA_REGISTRY_JMX_HOSTNAME: "localhost"
+      SCHEMA_REGISTRY_JMX_PORT: 31002
+    networks:
+      - kafka-network
+
+  kafka-ui:
+    container_name: kafka-ui
+    image: provectuslabs/kafka-ui:latest
+    depends_on:
+      - broker1
+      - broker2
+    ports:
+      - 8080:8080
+    environment:
+      DYNAMIC_CONFIG_ENABLED: true
+      KAFKA_CLUSTERS_0_NAME: kafka_test
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: broker1:9092,broker2:9092
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: trkiet-cluster
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-connect:8083
+      KAFKA_CLUSTERS_0_SCHEMAREGISTRY: "http://schema-registry:8081"
+      KAFKA_CLUSTERS_0_KSQLDBSERVER: "http://ksqldb-server:8088"
+    networks:
+      - kafka-network
+  
+  kafka-connect:
+    image: confluentinc/cp-kafka-connect-base:latest
+    container_name: kafka-connect
+    platform: linux/amd64
+    restart: always
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      sqlserver:
+        condition: service_started
+      broker1:
+        condition: service_started
+      broker2:
+        condition: service_started
+    ports:
+      - 8083:8083
+    environment:
+      CONNECT_BOOTSTRAP_SERVERS: broker1:9092,broker2:9092
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: kafka-connect
+      CONNECT_CONFIG_STORAGE_TOPIC: _connect-configs
+      CONNECT_OFFSET_STORAGE_TOPIC: _connect-offsets
+      CONNECT_STATUS_STORAGE_TOPIC: _connect-status
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.storage.StringConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_INTERNAL_KEY_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_INTERNAL_VALUE_CONVERTER: "org.apache.kafka.connect.json.JsonConverter"
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components,/data/connect-jars,/etc/kafka-connect/jars
+      CONNECT_REST_ADVERTISED_HOST_NAME: "kafka-connect"
+    command:
+      - bash
+      - -c
+      - |
+        echo "Installing Connector"
+        confluent-hub install debezium/debezium-connector-mysql:latest --no-prompt
+        confluent-hub install debezium/debezium-connector-postgresql:latest --no-prompt
+        confluent-hub install confluentinc/kafka-connect-jdbc:latest --no-prompt
+        #
+        echo "Launching Kafka Connect worker"
+        /etc/confluent/docker/run &
+        #
+        sleep infinity
+    networks:
+      - kafka-network
+
+  ksqldb-server:
+    image: confluentinc/ksqldb-server:0.14.0
+    hostname: ksqldb-server
+    container_name: ksqldb-server
+    command: ["/etc/ksqldb-server/run.sh"]
+    depends_on:
+      mysql:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      sqlserver:
+        condition: service_started
+      broker1:
+        condition: service_started
+      broker2:
+        condition: service_started
+    environment:
+      KSQL_CONNECT_URL: "http://kafka-connect:8083"
+    volumes:
+      - ./ksqldb-server:/etc/ksqldb-server
+    ports:
+      - "8088:8088"
+    networks:
+      - kafka-network
+  
+  ksqldb-cli:
+    image: confluentinc/ksqldb-cli:0.14.0
+    container_name: ksqldb-cli
+    depends_on:
+      - broker1
+      - broker2
+      - ksqldb-server
+    entrypoint: /bin/sh
+    tty: true
+    volumes:
+      - ./ksqldb-cli:/etc/sql
+    networks:
+      - kafka-network
+  
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GF_SECURITY_ADMIN_PASSWORD}
+    ports:
+      - "3000:3000"
+    networks:
+      - kafka-network
+    healthcheck:
+      test: ["CMD", "curl", "http://localhost:3000/login"]
+      interval: 20s
+      timeout: 10s
+      retries: 5
+
+networks:
+  kafka-network:
+    driver: bridge
