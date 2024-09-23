@@ -3,7 +3,7 @@ version: "3"
 services:
   binance-crawler:
     build:
-      context: ./crawler/binance
+      context: ./crawlers/binance
       dockerfile: Dockerfile
     container_name: binance-crawler
     depends_on:
@@ -21,13 +21,13 @@ services:
     ports:
       - "6969:6969"
     volumes:
-      - ./crawler/binance:/crawler/binance
+      - ./crawlers/binance:/crawler/binance
     networks:
       - kafka-network
     
   coin-market-crawler:
     build:
-      context: ./crawler/coin-market
+      context: ./crawlers/coin-market
       dockerfile: Dockerfile
     container_name: coin-market-crawler
     depends_on:
@@ -44,7 +44,7 @@ services:
     ports:
       - "6970:6970"
     volumes:
-      - ./crawler/coin-market:/crawler/coin-market
+      - ./crawlers/coin-market:/crawler/coin-market
     networks:
       - kafka-network
 
